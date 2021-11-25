@@ -1,12 +1,2 @@
-[package]
-name = "suds"
-version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-quick-xml = "0.22.0"
-reqwest = { version = "0.11.6", features = ["blocking"] }
-thiserror = "1.0.30"
-url = "2.2.2"
+[workspace]
+members = ["wsdl"]
