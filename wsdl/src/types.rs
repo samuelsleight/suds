@@ -1,7 +1,7 @@
 #[derive(Default, Debug, Clone)]
 pub struct Namespaces(Vec<String>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespacedName {
     namespace_idx: usize,
     pub name: String,

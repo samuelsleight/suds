@@ -7,6 +7,8 @@ use suds_wsdl::{
 use codegen::Codegen;
 
 mod codegen;
+mod preprocessor;
+mod types;
 
 pub fn from_url<S: AsRef<str>>(url: S) -> Result<TokenStream, error::Error> {
     let (definition, namespaces) = wsdl::parse(url)?;
@@ -17,5 +19,6 @@ pub fn from_definition(
     definition: &Definition,
     namespaces: &Namespaces,
 ) -> Result<TokenStream, error::Error> {
+    let definition = preprocessor::preprocess(definition);
     Ok(definition.codegen(namespaces))
 }
