@@ -3,8 +3,8 @@ use std::{fs::File, io::Write, process::Command};
 use structopt::StructOpt;
 use thiserror::Error;
 
-use suds_wsdl as wsdl;
 use suds_codegen as codegen;
+use suds_wsdl as wsdl;
 
 #[derive(Debug, Error)]
 enum Error {
@@ -15,10 +15,9 @@ enum Error {
     IoError(#[from] std::io::Error),
 }
 
-
 #[derive(StructOpt)]
 struct Args {
-    #[structopt(short, long, default_value="./output.rs")]
+    #[structopt(short, long, default_value = "./output.rs")]
     output: String,
 
     input: String,

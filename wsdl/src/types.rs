@@ -84,6 +84,10 @@ pub struct Definition {
 }
 
 impl Namespaces {
+    pub fn namespaces(&self) -> &[String] {
+        &self.0
+    }
+
     pub fn add_or_get(&mut self, namespace: &str) -> usize {
         if let Some(index) = self.index_of(namespace) {
             index
@@ -105,5 +109,9 @@ impl NamespacedName {
             namespace_idx: namespaces.add_or_get(namespace),
             name,
         }
+    }
+
+    pub fn index(&self) -> usize {
+        self.namespace_idx
     }
 }
