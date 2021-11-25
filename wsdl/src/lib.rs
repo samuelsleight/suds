@@ -1,11 +1,14 @@
 use std::path::Path;
 use url::Url;
 
-mod error;
 mod parser;
-mod types;
 
-pub fn parse<S: AsRef<str>>(url: S) -> Result<(types::Definition, types::Namespaces), error::Error> {
+pub mod error;
+pub mod types;
+
+pub fn parse<S: AsRef<str>>(
+    url: S,
+) -> Result<(types::Definition, types::Namespaces), error::Error> {
     let url = {
         match Url::parse(url.as_ref()) {
             Ok(url) => url,

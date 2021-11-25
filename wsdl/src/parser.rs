@@ -2,7 +2,10 @@ use quick_xml::{
     events::{attributes::Attributes, BytesStart, BytesText, Event},
     Reader,
 };
-use std::{collections::HashMap, io::{BufRead, BufReader}};
+use std::{
+    collections::HashMap,
+    io::{BufRead, BufReader},
+};
 use url::Url;
 
 use super::{
@@ -51,7 +54,7 @@ fn split_namespaced_name(prefixed_name: &str) -> (Option<&str>, &str) {
 #[derive(Clone)]
 struct CurrentNamespaces {
     target: String,
-    namespaces: HashMap<Option<String>, String>
+    namespaces: HashMap<Option<String>, String>,
 }
 
 struct Parser {
@@ -162,7 +165,10 @@ enum ParseState {
 
 impl CurrentNamespaces {
     pub fn new(target: String) -> Self {
-        Self { target, namespaces: Default::default() }
+        Self {
+            target,
+            namespaces: Default::default(),
+        }
     }
 
     pub fn with_target(&self, target: String) -> Self {
@@ -180,10 +186,15 @@ impl CurrentNamespaces {
         NamespacedName::new(namespaces, &self.target, name)
     }
 
-    pub fn resolved_prefix(&self, namespaces: &mut Namespaces, prefix: Option<String>, name: String) -> NamespacedName {
+    pub fn resolved_prefix(
+        &self,
+        namespaces: &mut Namespaces,
+        prefix: Option<String>,
+        name: String,
+    ) -> NamespacedName {
         match self.namespaces.get(&prefix) {
             Some(value) => NamespacedName::new(namespaces, value, name),
-            None => unimplemented!()
+            None => unimplemented!(),
         }
     }
 }
@@ -289,7 +300,8 @@ impl Parser {
         let mut namespace_buffer = Vec::new();
 
         loop {
-            let (namespace, event) = reader.read_namespaced_event(&mut buffer, &mut namespace_buffer)?;
+            let (namespace, event) =
+                reader.read_namespaced_event(&mut buffer, &mut namespace_buffer)?;
 
             match event {
                 Event::Decl(..) => (),
@@ -322,7 +334,7 @@ impl Parser {
         stack: &mut Vec<ParseState>,
         reader: &Reader<B>,
         start: BytesStart<'a>,
-        namespace_bytes: Option<&[u8]>
+        namespace_bytes: Option<&[u8]>,
     ) -> Result<(), error::Error> {
         let (prefix, local_name) = split_namespaced_name(reader.decode(start.name())?);
 
@@ -444,7 +456,12 @@ impl Parser {
 
                     if let Some(namespace) = namespace {
                         self.push_target_namespace(namespace);
-                        self.add_namespace_prefix(prefix.map(ToOwned::to_owned), namespace_bytes.and_then(|ns| std::str::from_utf8(ns).ok()).unwrap());
+                        self.add_namespace_prefix(
+                            prefix.map(ToOwned::to_owned),
+                            namespace_bytes
+                                .and_then(|ns| std::str::from_utf8(ns).ok())
+                                .unwrap(),
+                        );
                     } else {
                         unimplemented!()
                     };
