@@ -1,7 +1,7 @@
 use super::types;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use suds_wsdl::types::{self as wsdl, NamespacedName, Namespaces};
+use suds_wsdl::types::{self as wsdl, Namespaces};
 
 pub trait Codegen {
     fn codegen(&self, namespaces: &Namespaces) -> TokenStream;
@@ -89,8 +89,8 @@ impl Codegen for wsdl::Type {
         let name = format_ident!("{}", &self.name.name);
         let (fields, xml_fields) = match &self.kind {
             wsdl::TypeKind::Struct(fields) => (
-                codegen_all(&fields, namespaces),
-                codegen_fields(&fields, namespaces),
+                codegen_all(fields, namespaces),
+                codegen_fields(fields, namespaces),
             ),
         };
 
@@ -115,7 +115,7 @@ impl Codegen for wsdl::Type {
 }
 
 impl Codegen for wsdl::Field {
-    fn codegen(&self, namespaces: &Namespaces) -> TokenStream {
+    fn codegen(&self, _: &Namespaces) -> TokenStream {
         let name = format_ident!("{}", &self.name.name);
 
         let ty = if let Some(ident) = match &self.ty.name as &str {
@@ -134,7 +134,7 @@ impl Codegen for wsdl::Field {
     }
 }
 
-fn codegen_fields(fields: &[wsdl::Field], namespaces: &Namespaces) -> Vec<TokenStream> {
+fn codegen_fields(fields: &[wsdl::Field], _: &Namespaces) -> Vec<TokenStream> {
     fields.iter().map(|field| {
         let name = format_ident!("{}", &field.name.name);
         let xml_name = format!("ns{}:{}", field.name.index(), &field.name.name);
@@ -213,7 +213,7 @@ impl Codegen for types::Port {
 }
 
 impl Codegen for wsdl::Operation {
-    fn codegen(&self, namespaces: &Namespaces) -> TokenStream {
+    fn codegen(&self, _: &Namespaces) -> TokenStream {
         let name = format_ident!("{}", &self.name.name);
 
         let input = if let Some(input) = &self.input {

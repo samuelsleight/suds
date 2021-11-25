@@ -16,9 +16,9 @@ use super::{
     },
 };
 
-fn get_attributes<'a, B: BufRead, const N: usize>(
+fn get_attributes<B: BufRead, const N: usize>(
     reader: &Reader<B>,
-    attributes: Attributes<'a>,
+    attributes: Attributes<'_>,
     names: [&'static str; N],
 ) -> Result<[Option<String>; N], error::Error> {
     const INIT: Option<String> = None;
@@ -262,13 +262,7 @@ impl Parser {
     }
 
     fn parse(mut self) -> Result<(Definition, Namespaces), error::Error> {
-        loop {
-            let url = if let Some(url) = self.queue.pop() {
-                url
-            } else {
-                break;
-            };
-
+        while let Some(url) = self.queue.pop() {
             println!("PARSING {}", url);
             self.parse_url(url)?;
         }
@@ -290,7 +284,7 @@ impl Parser {
                 reqwest::blocking::get(url)?,
             ))),
 
-            other => return Err(error::Error::UnsupportedScheme(other.into())),
+            other => Err(error::Error::UnsupportedScheme(other.into())),
         }
     }
 
