@@ -6,8 +6,11 @@ use std::io::{BufRead, BufReader};
 use url::Url;
 
 use super::{
-    error, Binding, BindingOperation, Definition, Field, Message, Operation, Port, PortType,
-    Service, Type, TypeKind,
+    error,
+    types::{
+        Binding, BindingOperation, Definition, Field, Message, NamespacedName, Namespaces,
+        Operation, Port, PortType, Service, Type, TypeKind,
+    },
 };
 
 fn get_attributes<'a, B: BufRead, const N: usize>(
@@ -33,11 +36,17 @@ fn get_attributes<'a, B: BufRead, const N: usize>(
     Ok(result)
 }
 
+struct CurrentNamespaces {
+    target: String,
+}
+
 struct Parser {
     root: Url,
     queue: Vec<Url>,
 
     definition: Definition,
+    namespaces: Namespaces,
+    namespace_stack: Vec<CurrentNamespaces>,
 }
 
 #[derive(Debug)]
@@ -45,9 +54,7 @@ enum ParseState {
     Definitions,
 
     Types,
-    Schema {
-        namespace: String,
-    },
+    Schema,
     Element {
         name: String,
         kind: Option<TypeKind>,
@@ -139,6 +146,16 @@ enum ParseState {
     Other(String),
 }
 
+impl CurrentNamespaces {
+    pub fn new(target: String) -> Self {
+        Self { target }
+    }
+
+    pub fn target_namespaced(&self, namespaces: &mut Namespaces, name: String) -> NamespacedName {
+        NamespacedName::new(namespaces, &self.target, name)
+    }
+}
+
 impl Parser {
     fn new(url: Url) -> Self {
         Self {
@@ -146,10 +163,30 @@ impl Parser {
             queue: vec![url],
 
             definition: Default::default(),
+            namespaces: Default::default(),
+            namespace_stack: Vec::new(),
         }
     }
 
-    fn parse(mut self) -> Result<Definition, error::Error> {
+    fn push_target_namespace(&mut self, namespace: String) {
+        self.namespace_stack.push(CurrentNamespaces::new(namespace))
+    }
+
+    fn pop_target_namespace(&mut self) {
+        if self.namespace_stack.pop().is_none() {
+            unimplemented!()
+        }
+    }
+
+    fn target_namespaced(&mut self, name: String) -> NamespacedName {
+        if let Some(namespaces) = self.namespace_stack.last() {
+            namespaces.target_namespaced(&mut self.namespaces, name)
+        } else {
+            unimplemented!()
+        }
+    }
+
+    fn parse(mut self) -> Result<(Definition, Namespaces), error::Error> {
         loop {
             let url = if let Some(url) = self.queue.pop() {
                 url
@@ -161,7 +198,7 @@ impl Parser {
             self.parse_url(url)?;
         }
 
-        Ok(self.definition)
+        Ok((self.definition, self.namespaces))
     }
 
     fn parse_url(&mut self, url: Url) -> Result<(), error::Error> {
@@ -226,7 +263,19 @@ impl Parser {
 
         match state {
             None => match local_name {
-                "definitions" => new_state = Some(ParseState::Definitions),
+                "definitions" => {
+                    let [namespace] =
+                        get_attributes(reader, start.attributes(), ["targetNamespace"])?;
+
+                    if let Some(namespace) = namespace {
+                        self.push_target_namespace(namespace)
+                    } else {
+                        unimplemented!()
+                    }
+
+                    new_state = Some(ParseState::Definitions)
+                }
+
                 _ => (),
             },
 
@@ -325,13 +374,13 @@ impl Parser {
                     let [namespace] =
                         get_attributes(reader, start.attributes(), ["targetNamespace"])?;
 
-                    let namespace = if let Some(namespace) = namespace {
-                        namespace
+                    if let Some(namespace) = namespace {
+                        self.push_target_namespace(namespace)
                     } else {
                         unimplemented!()
                     };
 
-                    new_state = Some(ParseState::Schema { namespace })
+                    new_state = Some(ParseState::Schema)
                 }
 
                 _ => println!("FOUND {} INSIDE TYPES BLOCK", local_name),
@@ -630,6 +679,8 @@ impl Parser {
         println!("ENDING STATE {:?}", finished_state);
 
         match finished_state {
+            Some(ParseState::Definitions | ParseState::Schema) => self.pop_target_namespace(),
+
             Some(ParseState::Element { name, kind }) => {
                 let kind = if let Some(kind) = kind {
                     kind
@@ -637,6 +688,7 @@ impl Parser {
                     unimplemented!()
                 };
 
+                let name = self.target_namespaced(name);
                 self.definition.types.push(Type { name, kind })
             }
 
@@ -655,25 +707,32 @@ impl Parser {
             },
 
             Some(ParseState::SequenceElement { name, ty }) => match next_state {
-                Some(ParseState::Sequence(ref mut fields)) => fields.push(Field { name, ty }),
+                Some(ParseState::Sequence(ref mut fields)) => fields.push(Field {
+                    name: self.target_namespaced(name),
+                    ty,
+                }),
                 _ => unimplemented!(),
             },
 
             Some(ParseState::Message { name, parts }) => {
+                let name = self.target_namespaced(name);
                 self.definition.messages.push(Message { name, parts })
             }
 
             Some(ParseState::Part { name, element }) => match next_state {
-                Some(ParseState::Message { ref mut parts, .. }) => {
-                    parts.push(Field { name, ty: element })
-                }
+                Some(ParseState::Message { ref mut parts, .. }) => parts.push(Field {
+                    name: self.target_namespaced(name),
+                    ty: element,
+                }),
                 _ => unimplemented!(),
             },
 
-            Some(ParseState::PortType { name, operations }) => self
-                .definition
-                .port_types
-                .push(PortType { name, operations }),
+            Some(ParseState::PortType { name, operations }) => {
+                let name = self.target_namespaced(name);
+                self.definition
+                    .port_types
+                    .push(PortType { name, operations })
+            }
 
             Some(ParseState::Operation {
                 name,
@@ -684,7 +743,7 @@ impl Parser {
                 Some(ParseState::PortType {
                     ref mut operations, ..
                 }) => operations.push(Operation {
-                    name,
+                    name: self.target_namespaced(name),
                     input,
                     output,
                     documentation,
@@ -726,12 +785,15 @@ impl Parser {
                 ty,
                 transport,
                 operations,
-            }) => self.definition.bindings.push(Binding {
-                name,
-                ty,
-                transport: transport.unwrap(),
-                operations,
-            }),
+            }) => {
+                let name = self.target_namespaced(name);
+                self.definition.bindings.push(Binding {
+                    name,
+                    ty,
+                    transport: transport.unwrap(),
+                    operations,
+                })
+            }
 
             Some(ParseState::BindingOperation {
                 name,
@@ -743,7 +805,7 @@ impl Parser {
                 Some(ParseState::Binding {
                     ref mut operations, ..
                 }) => operations.push(BindingOperation {
-                    name,
+                    name: self.target_namespaced(name),
                     action: action.unwrap(),
                     style: style.unwrap(),
                     input,
@@ -783,6 +845,7 @@ impl Parser {
             },
 
             Some(ParseState::Service { name, ports }) => {
+                let name = self.target_namespaced(name);
                 self.definition.services.push(Service { name, ports })
             }
 
@@ -792,7 +855,7 @@ impl Parser {
                 address,
             }) => match next_state {
                 Some(ParseState::Service { ref mut ports, .. }) => ports.push(Port {
-                    name,
+                    name: self.target_namespaced(name),
                     binding,
                     location: address.unwrap(),
                 }),
@@ -834,6 +897,6 @@ impl Parser {
     }
 }
 
-pub fn parse(url: Url) -> Result<Definition, error::Error> {
+pub fn parse(url: Url) -> Result<(Definition, Namespaces), error::Error> {
     Parser::new(url).parse()
 }
