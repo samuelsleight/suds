@@ -1,2 +1,2 @@
 [workspace]
-members = ["wsdl", "codegen", "macro"]
+members = ["wsdl", "codegen", "macro", "suds"]

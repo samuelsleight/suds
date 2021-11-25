@@ -1,0 +1,13 @@
+[package]
+name = "suds"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+paw = "1.0.0"
+structopt = { version = "0.3.25", features = ["paw"] }
+suds_codegen = { path = "../codegen" }
+suds_wsdl = { path = "../wsdl" }
+thiserror = "1.0.30"
