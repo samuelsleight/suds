@@ -21,7 +21,7 @@ pub struct Type {
 #[derive(Debug, Clone)]
 pub struct Field {
     pub name: NamespacedName,
-    pub ty: String,
+    pub ty: NamespacedName,
 }
 
 #[derive(Debug, Clone)]
@@ -34,8 +34,8 @@ pub struct Message {
 pub struct Operation {
     pub name: NamespacedName,
     pub documentation: Option<String>,
-    pub input: Option<String>,
-    pub output: Option<String>,
+    pub input: Option<NamespacedName>,
+    pub output: Option<NamespacedName>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +56,7 @@ pub struct BindingOperation {
 #[derive(Debug, Clone)]
 pub struct Binding {
     pub name: NamespacedName,
-    pub ty: String,
+    pub ty: NamespacedName,
     pub transport: String,
     pub operations: Vec<BindingOperation>,
 }
@@ -64,7 +64,7 @@ pub struct Binding {
 #[derive(Debug, Clone)]
 pub struct Port {
     pub name: NamespacedName,
-    pub binding: String,
+    pub binding: NamespacedName,
     pub location: String,
 }
 

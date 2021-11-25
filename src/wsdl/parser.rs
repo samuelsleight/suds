@@ -2,7 +2,7 @@ use quick_xml::{
     events::{attributes::Attributes, BytesStart, BytesText, Event},
     Reader,
 };
-use std::io::{BufRead, BufReader};
+use std::{collections::HashMap, io::{BufRead, BufReader}};
 use url::Url;
 
 use super::{
@@ -36,8 +36,22 @@ fn get_attributes<'a, B: BufRead, const N: usize>(
     Ok(result)
 }
 
+fn split_namespaced_name(prefixed_name: &str) -> (Option<&str>, &str) {
+    let mut split = prefixed_name.split(':');
+    let first = split.next().unwrap();
+    let second = split.next();
+
+    if let Some(second) = second {
+        (Some(first), second)
+    } else {
+        (None, first)
+    }
+}
+
+#[derive(Clone)]
 struct CurrentNamespaces {
     target: String,
+    namespaces: HashMap<Option<String>, String>
 }
 
 struct Parser {
@@ -65,7 +79,7 @@ enum ParseState {
     Sequence(Vec<Field>),
     SequenceElement {
         name: String,
-        ty: String,
+        ty: NamespacedName,
     },
 
     Message {
@@ -74,7 +88,7 @@ enum ParseState {
     },
     Part {
         name: String,
-        element: String,
+        element: NamespacedName,
     },
 
     PortType {
@@ -84,20 +98,20 @@ enum ParseState {
     Operation {
         name: String,
         documentation: Option<String>,
-        input: Option<String>,
-        output: Option<String>,
+        input: Option<NamespacedName>,
+        output: Option<NamespacedName>,
     },
     Documentation(Option<String>),
     Input {
-        message: String,
+        message: NamespacedName,
     },
     Output {
-        message: String,
+        message: NamespacedName,
     },
 
     Binding {
         name: String,
-        ty: String,
+        ty: NamespacedName,
         transport: Option<String>,
         operations: Vec<BindingOperation>,
     },
@@ -131,7 +145,7 @@ enum ParseState {
     },
     Port {
         name: String,
-        binding: String,
+        binding: NamespacedName,
         address: Option<String>,
     },
     Address {
@@ -148,11 +162,29 @@ enum ParseState {
 
 impl CurrentNamespaces {
     pub fn new(target: String) -> Self {
-        Self { target }
+        Self { target, namespaces: Default::default() }
+    }
+
+    pub fn with_target(&self, target: String) -> Self {
+        Self {
+            target,
+            ..self.clone()
+        }
+    }
+
+    pub fn add_namespace_prefix(&mut self, prefix: Option<String>, namespace: &str) {
+        self.namespaces.insert(prefix, namespace.to_owned());
     }
 
     pub fn target_namespaced(&self, namespaces: &mut Namespaces, name: String) -> NamespacedName {
         NamespacedName::new(namespaces, &self.target, name)
+    }
+
+    pub fn resolved_prefix(&self, namespaces: &mut Namespaces, prefix: Option<String>, name: String) -> NamespacedName {
+        match self.namespaces.get(&prefix) {
+            Some(value) => NamespacedName::new(namespaces, value, name),
+            None => unimplemented!()
+        }
     }
 }
 
@@ -169,11 +201,25 @@ impl Parser {
     }
 
     fn push_target_namespace(&mut self, namespace: String) {
-        self.namespace_stack.push(CurrentNamespaces::new(namespace))
+        let new_namespaces = if let Some(namespaces) = self.namespace_stack.last() {
+            namespaces.with_target(namespace)
+        } else {
+            CurrentNamespaces::new(namespace)
+        };
+
+        self.namespace_stack.push(new_namespaces);
     }
 
     fn pop_target_namespace(&mut self) {
         if self.namespace_stack.pop().is_none() {
+            unimplemented!()
+        }
+    }
+
+    fn add_namespace_prefix(&mut self, prefix: Option<String>, namespace: &str) {
+        if let Some(namespaces) = self.namespace_stack.last_mut() {
+            namespaces.add_namespace_prefix(prefix, namespace)
+        } else {
             unimplemented!()
         }
     }
@@ -183,6 +229,24 @@ impl Parser {
             namespaces.target_namespaced(&mut self.namespaces, name)
         } else {
             unimplemented!()
+        }
+    }
+
+    fn resolved_prefix(&mut self, prefix: Option<String>, name: String) -> NamespacedName {
+        if let Some(namespaces) = self.namespace_stack.last() {
+            namespaces.resolved_prefix(&mut self.namespaces, prefix, name)
+        } else {
+            unimplemented!()
+        }
+    }
+
+    fn resolve_namespace(&mut self, prefixed_name: &str) -> NamespacedName {
+        let (prefix, local_name) = split_namespaced_name(prefixed_name);
+
+        match prefix {
+            Some("tns") => self.target_namespaced(local_name.to_owned()),
+
+            _ => self.resolved_prefix(prefix.map(ToOwned::to_owned), local_name.to_owned()),
         }
     }
 
@@ -222,16 +286,19 @@ impl Parser {
     fn parse_xml<B: BufRead>(&mut self, mut reader: Reader<B>) -> Result<(), error::Error> {
         let mut stack = Vec::new();
         let mut buffer = Vec::new();
+        let mut namespace_buffer = Vec::new();
 
         loop {
-            match reader.read_event(&mut buffer)? {
+            let (namespace, event) = reader.read_namespaced_event(&mut buffer, &mut namespace_buffer)?;
+
+            match event {
                 Event::Decl(..) => (),
 
-                Event::Start(start) => self.handle_start(&mut stack, &reader, start)?,
+                Event::Start(start) => self.handle_start(&mut stack, &reader, start, namespace)?,
                 Event::End(..) => self.handle_end(&mut stack)?,
 
                 Event::Empty(start) => {
-                    self.handle_start(&mut stack, &reader, start)?;
+                    self.handle_start(&mut stack, &reader, start, namespace)?;
                     self.handle_end(&mut stack)?;
                 }
 
@@ -255,8 +322,9 @@ impl Parser {
         stack: &mut Vec<ParseState>,
         reader: &Reader<B>,
         start: BytesStart<'a>,
+        namespace_bytes: Option<&[u8]>
     ) -> Result<(), error::Error> {
-        let local_name = reader.decode(start.local_name())?;
+        let (prefix, local_name) = split_namespaced_name(reader.decode(start.name())?);
 
         let state = stack.pop();
         let mut new_state = Some(ParseState::Other(local_name.to_owned()));
@@ -338,7 +406,7 @@ impl Parser {
                     };
 
                     let ty = if let Some(ty) = ty {
-                        ty
+                        self.resolve_namespace(&ty)
                     } else {
                         unimplemented!()
                     };
@@ -375,7 +443,8 @@ impl Parser {
                         get_attributes(reader, start.attributes(), ["targetNamespace"])?;
 
                     if let Some(namespace) = namespace {
-                        self.push_target_namespace(namespace)
+                        self.push_target_namespace(namespace);
+                        self.add_namespace_prefix(prefix.map(ToOwned::to_owned), namespace_bytes.and_then(|ns| std::str::from_utf8(ns).ok()).unwrap());
                     } else {
                         unimplemented!()
                     };
@@ -425,7 +494,7 @@ impl Parser {
                     };
 
                     let ty = if let Some(ty) = ty {
-                        ty
+                        self.resolve_namespace(&ty)
                     } else {
                         unimplemented!()
                     };
@@ -452,7 +521,7 @@ impl Parser {
                     };
 
                     let element = if let Some(element) = element {
-                        element
+                        self.resolve_namespace(&element)
                     } else {
                         unimplemented!()
                     };
@@ -495,7 +564,7 @@ impl Parser {
                     let [message] = get_attributes(reader, start.attributes(), ["message"])?;
 
                     let message = if let Some(message) = message {
-                        message
+                        self.resolve_namespace(&message)
                     } else {
                         unimplemented!()
                     };
@@ -624,7 +693,7 @@ impl Parser {
                     };
 
                     let binding = if let Some(binding) = binding {
-                        binding
+                        self.resolve_namespace(&binding)
                     } else {
                         unimplemented!()
                     };
