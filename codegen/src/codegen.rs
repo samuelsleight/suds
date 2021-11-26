@@ -36,14 +36,16 @@ impl Codegen for types::Definition {
 impl Codegen for wsdl::Type {
     fn codegen(&self, namespaces: &Namespaces) -> TokenStream {
         let name = format_ident!("{}", &self.name.name);
-        let (fields, xml_fields) = match &self.kind {
+        let (fields, to_xml_fields, from_xml_fields) = match &self.kind {
             wsdl::TypeKind::Struct(fields) => (
                 codegen_all(fields, namespaces),
-                codegen_fields(fields, namespaces),
+                codegen_to_xml_fields(fields, namespaces),
+                codegen_from_xml_fields(fields, namespaces),
             ),
         };
 
-        let xml_name = format!("ns{}:{}", self.name.index(), &self.name.name);
+        let to_xml_name = format!("ns{}:{}", self.name.index(), &self.name.name);
+        let from_xml_name = &self.name.name;
 
         let namespaces = namespaces
             .namespaces()
@@ -63,7 +65,7 @@ impl Codegen for wsdl::Type {
 
             impl suds_util::xml::ToXml for #name {
                 fn to_xml<W: std::io::Write>(&self, writer: &mut suds_util::xml::Writer<W>, mut top_level: bool) {
-                    let start = suds_util::xml::events::BytesStart::owned_name(#xml_name);
+                    let start = suds_util::xml::events::BytesStart::owned_name(#to_xml_name);
 
                     let start = if top_level {
                         start #(#namespaces)*
@@ -74,8 +76,20 @@ impl Codegen for wsdl::Type {
                     top_level = false;
 
                     writer.write_event(suds_util::xml::events::Event::Start(start.to_borrowed())).unwrap();
-                    #(#xml_fields)*
+                    #(#to_xml_fields)*
                     writer.write_event(suds_util::xml::events::Event::End(start.to_end())).unwrap();
+                }
+            }
+
+            impl suds_util::xml::FromXml for #name {
+                fn from_xml<R: std::io::BufRead>(reader: &mut suds_util::xml::Reader<R>, buffer: &mut Vec<u8>) -> Self {
+                    suds_util::xml::expect_start(reader, buffer, #from_xml_name).unwrap();
+                    let result = Self {
+                        #(#from_xml_fields)*
+                    };
+                    suds_util::xml::expect_end(reader, buffer).unwrap();
+
+                    result
                 }
             }
         }
@@ -102,7 +116,7 @@ impl Codegen for wsdl::Field {
     }
 }
 
-fn codegen_fields(fields: &[wsdl::Field], _: &Namespaces) -> Vec<TokenStream> {
+fn codegen_to_xml_fields(fields: &[wsdl::Field], _: &Namespaces) -> Vec<TokenStream> {
     fields.iter().map(|field| {
         let name = format_ident!("{}", &field.name.name);
         let xml_name = format!("ns{}:{}", field.name.index(), &field.name.name);
@@ -121,12 +135,37 @@ fn codegen_fields(fields: &[wsdl::Field], _: &Namespaces) -> Vec<TokenStream> {
     }).collect()
 }
 
+fn codegen_from_xml_fields(fields: &[wsdl::Field], _: &Namespaces) -> Vec<TokenStream> {
+    fields
+        .iter()
+        .map(|field| {
+            let name = format_ident!("{}", &field.name.name);
+            let xml_name = &field.name.name;
+
+            match &field.ty.name as &str {
+                "int" => quote! { #name: {
+                    suds_util::xml::expect_start(reader, buffer, #xml_name).unwrap();
+                    let value = suds_util::xml::expect_value(reader, buffer).unwrap();
+                    suds_util::xml::expect_end(reader, buffer).unwrap();
+
+                    value
+                }, },
+                _ => {
+                    let ident = format_ident!("{}", &field.ty.name);
+                    quote! { #name: super::types::#ident::from_xml(reader, buffer), }
+                }
+            }
+        })
+        .collect()
+}
+
 impl Codegen for wsdl::Message {
     fn codegen(&self, namespaces: &Namespaces) -> TokenStream {
         let name = format_ident!("{}", &self.name.name);
         let fields = codegen_all(&self.parts, namespaces);
 
-        let xml_fields = codegen_fields(&self.parts, namespaces);
+        let to_xml_fields = codegen_to_xml_fields(&self.parts, namespaces);
+        let from_xml_fields = codegen_from_xml_fields(&self.parts, namespaces);
 
         quote! {
             #[derive(Debug, Clone)]
@@ -136,7 +175,15 @@ impl Codegen for wsdl::Message {
 
             impl suds_util::xml::ToXml for #name {
                 fn to_xml<W: std::io::Write>(&self, writer: &mut suds_util::xml::Writer<W>, top_level: bool) {
-                    #(#xml_fields)*
+                    #(#to_xml_fields)*
+                }
+            }
+
+            impl suds_util::xml::FromXml for #name {
+                fn from_xml<R: std::io::BufRead>(reader: &mut suds_util::xml::Reader<R>, buffer: &mut Vec<u8>) -> Self {
+                    Self {
+                        #(#from_xml_fields)*
+                    }
                 }
             }
         }
@@ -205,10 +252,7 @@ impl Codegen for wsdl::Operation {
         quote! {
             pub fn #name(&self #input) #output {
                 let envelope = suds_util::soap::Envelope::new(input);
-                let response = self.client.send(envelope);
-                println!("{:?}", response.text().unwrap());
-
-                unimplemented!()
+                self.client.send(envelope).into_body()
             }
         }
     }
