@@ -9,7 +9,9 @@ pub struct NamespacedName {
 
 #[derive(Debug, Clone)]
 pub enum TypeKind {
+    Simple(NamespacedName),
     Struct(Vec<Field>),
+    Alias(NamespacedName),
 }
 
 #[derive(Debug, Clone)]
@@ -19,9 +21,15 @@ pub struct Type {
 }
 
 #[derive(Debug, Clone)]
+pub enum FieldKind {
+    Type(NamespacedName),
+    Inner(TypeKind),
+}
+
+#[derive(Debug, Clone)]
 pub struct Field {
     pub name: NamespacedName,
-    pub ty: NamespacedName,
+    pub ty: FieldKind,
 }
 
 #[derive(Debug, Clone)]

@@ -8,6 +8,8 @@ use std::{
 };
 use url::Url;
 
+use crate::types::FieldKind;
+
 use super::{
     error,
     types::{
@@ -51,19 +53,18 @@ fn split_namespaced_name(prefixed_name: &str) -> (Option<&str>, &str) {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct CurrentNamespaces {
-    target: String,
+    target: Vec<String>,
     namespaces: HashMap<Option<String>, String>,
 }
 
 struct Parser {
     root: Url,
-    queue: Vec<Url>,
 
     definition: Definition,
     namespaces: Namespaces,
-    namespace_stack: Vec<CurrentNamespaces>,
+    current_namespaces: CurrentNamespaces,
 }
 
 #[derive(Debug)]
@@ -80,9 +81,29 @@ enum ParseState {
         name: Option<String>,
         kind: Option<TypeKind>,
     },
+    ComplexContent {
+        fields: Vec<Field>
+    },
+    ComplexExtension {
+        fields: Vec<Field>
+    },
+    SimpleContent {
+        ty: Option<NamespacedName>
+    },
+    SimpleExtension {
+        ty: NamespacedName
+    },
     Sequence(Vec<Field>),
     SequenceElement {
         name: String,
+        ty: Option<NamespacedName>,
+        inner: Option<TypeKind>,
+    },
+    SimpleType {
+        name: String,
+        ty: Option<NamespacedName>,
+    },
+    Restriction {
         ty: NamespacedName,
     },
 
@@ -158,25 +179,18 @@ enum ParseState {
 
     Import {
         namespace: Option<String>,
-        url: Url,
     },
 
     Other(String),
 }
 
 impl CurrentNamespaces {
-    pub fn new(target: String) -> Self {
-        Self {
-            target,
-            namespaces: Default::default(),
-        }
+    pub fn push_target_namespace(&mut self, namespace: String) {
+        self.target.push(namespace);
     }
 
-    pub fn with_target(&self, target: String) -> Self {
-        Self {
-            target,
-            ..self.clone()
-        }
+    pub fn pop_target_namespace(&mut self) {
+        self.target.pop();
     }
 
     pub fn add_namespace_prefix(&mut self, prefix: Option<String>, namespace: &str) {
@@ -184,7 +198,11 @@ impl CurrentNamespaces {
     }
 
     pub fn target_namespaced(&self, namespaces: &mut Namespaces, name: String) -> NamespacedName {
-        NamespacedName::new(namespaces, &self.target, name)
+        if let Some(target) = self.target.last() {
+            NamespacedName::new(namespaces, target, name)
+        } else {
+            unimplemented!()
+        }
     }
 
     pub fn resolved_prefix(
@@ -204,52 +222,34 @@ impl Parser {
     fn new(url: Url) -> Self {
         Self {
             root: url.clone(),
-            queue: vec![url],
 
             definition: Default::default(),
             namespaces: Default::default(),
-            namespace_stack: Vec::new(),
+            current_namespaces: Default::default(),
         }
     }
 
     fn push_target_namespace(&mut self, namespace: String) {
-        let new_namespaces = if let Some(namespaces) = self.namespace_stack.last() {
-            namespaces.with_target(namespace)
-        } else {
-            CurrentNamespaces::new(namespace)
-        };
-
-        self.namespace_stack.push(new_namespaces);
+        self.current_namespaces.push_target_namespace(namespace);
     }
 
     fn pop_target_namespace(&mut self) {
-        if self.namespace_stack.pop().is_none() {
-            unimplemented!()
-        }
+        self.current_namespaces.pop_target_namespace();
     }
 
     fn add_namespace_prefix(&mut self, prefix: Option<String>, namespace: &str) {
-        if let Some(namespaces) = self.namespace_stack.last_mut() {
-            namespaces.add_namespace_prefix(prefix, namespace)
-        } else {
-            unimplemented!()
-        }
+        self.current_namespaces
+            .add_namespace_prefix(prefix, namespace);
     }
 
     fn target_namespaced(&mut self, name: String) -> NamespacedName {
-        if let Some(namespaces) = self.namespace_stack.last() {
-            namespaces.target_namespaced(&mut self.namespaces, name)
-        } else {
-            unimplemented!()
-        }
+        self.current_namespaces
+            .target_namespaced(&mut self.namespaces, name)
     }
 
     fn resolved_prefix(&mut self, prefix: Option<String>, name: String) -> NamespacedName {
-        if let Some(namespaces) = self.namespace_stack.last() {
-            namespaces.resolved_prefix(&mut self.namespaces, prefix, name)
-        } else {
-            unimplemented!()
-        }
+        self.current_namespaces
+            .resolved_prefix(&mut self.namespaces, prefix, name)
     }
 
     fn resolve_namespace(&mut self, prefixed_name: &str) -> NamespacedName {
@@ -263,17 +263,16 @@ impl Parser {
     }
 
     fn parse(mut self) -> Result<(Definition, Namespaces), error::Error> {
-        while let Some(url) = self.queue.pop() {
-            println!("PARSING {}", url);
-            self.parse_url(url)?;
-        }
-
+        self.parse_url(self.root.clone())?;
         Ok((self.definition, self.namespaces))
     }
 
     fn parse_url(&mut self, url: Url) -> Result<(), error::Error> {
-        match url.scheme() {
+        println!("PARSING URL: {}", url);
+
+        let result = match url.scheme() {
             "file" => self.parse_xml(
+                url.clone(),
                 Reader::from_file(
                     url.to_file_path()
                         .map_err(|()| error::Error::PathConversionError(None))?,
@@ -281,15 +280,18 @@ impl Parser {
                 .map_err(error::Error::FileOpenError)?,
             ),
 
-            "http" | "https" => self.parse_xml(Reader::from_reader(BufReader::new(
+            "http" | "https" => self.parse_xml(url.clone(), Reader::from_reader(BufReader::new(
                 reqwest::blocking::get(url)?,
             ))),
 
             other => Err(error::Error::UnsupportedScheme(other.into())),
-        }
+        };
+
+        println!("FINISHED PARSING FILE");
+        result
     }
 
-    fn parse_xml<B: BufRead>(&mut self, mut reader: Reader<B>) -> Result<(), error::Error> {
+    fn parse_xml<B: BufRead>(&mut self, url: Url, mut reader: Reader<B>) -> Result<(), error::Error> {
         let mut stack = Vec::new();
         let mut buffer = Vec::new();
         let mut namespace_buffer = Vec::new();
@@ -301,11 +303,11 @@ impl Parser {
             match event {
                 Event::Decl(..) => (),
 
-                Event::Start(start) => self.handle_start(&mut stack, &reader, start, namespace)?,
+                Event::Start(start) => self.handle_start(&mut stack, &reader, start, namespace, &url)?,
                 Event::End(..) => self.handle_end(&mut stack)?,
 
                 Event::Empty(start) => {
-                    self.handle_start(&mut stack, &reader, start, namespace)?;
+                    self.handle_start(&mut stack, &reader, start, namespace, &url)?;
                     self.handle_end(&mut stack)?;
                 }
 
@@ -330,11 +332,25 @@ impl Parser {
         reader: &Reader<B>,
         start: BytesStart<'a>,
         namespace_bytes: Option<&[u8]>,
+        url: &Url
     ) -> Result<(), error::Error> {
         let (prefix, local_name) = split_namespaced_name(reader.decode(start.name())?);
 
         let state = stack.pop();
         let mut new_state = Some(ParseState::Other(local_name.to_owned()));
+
+        for attribute in start.attributes() {
+            let attribute = attribute?;
+            let key = reader.decode(attribute.key)?;
+            let (prefix, value) = split_namespaced_name(key);
+
+            if prefix == Some("xmlns") {
+                self.add_namespace_prefix(
+                    Some(value.to_owned()),
+                    reader.decode(attribute.value.as_ref())?,
+                );
+            }
+        }
 
         match state {
             None => match local_name {
@@ -351,6 +367,25 @@ impl Parser {
                     new_state = Some(ParseState::Definitions)
                 }
 
+                "schema" => {
+                    let [namespace] =
+                        get_attributes(reader, start.attributes(), ["targetNamespace"])?;
+
+                    if let Some(namespace) = namespace {
+                        self.push_target_namespace(namespace);
+                        self.add_namespace_prefix(
+                            prefix.map(ToOwned::to_owned),
+                            namespace_bytes
+                                .and_then(|ns| std::str::from_utf8(ns).ok())
+                                .unwrap(),
+                        );
+                    } else {
+                        unimplemented!()
+                    };
+
+                    new_state = Some(ParseState::Schema)
+                }
+
                 _ => (),
             },
 
@@ -365,10 +400,10 @@ impl Parser {
                         unimplemented!()
                     };
 
-                    new_state = Some(ParseState::Import {
-                        url: self.root.join(&location)?,
-                        namespace,
-                    });
+                    self.parse_url(self.root.join(&location)?)?;
+                    println!("BACK TO {}", url);
+
+                    new_state = Some(ParseState::Import { namespace });
                 }
 
                 "types" => new_state = Some(ParseState::Types),
@@ -464,12 +499,31 @@ impl Parser {
                     new_state = Some(ParseState::Schema)
                 }
 
+                "import" => {
+                    let [location, namespace] = get_attributes(
+                        reader,
+                        start.attributes(),
+                        ["schemaLocation", "namespace"],
+                    )?;
+
+                    let location = if let Some(location) = location {
+                        location
+                    } else {
+                        unimplemented!()
+                    };
+
+                    self.parse_url(self.root.join(&location)?)?;
+                    println!("BACK TO {}", url);
+
+                    new_state = Some(ParseState::Import { namespace });
+                }
+
                 _ => println!("FOUND {} INSIDE TYPES BLOCK", local_name),
             },
 
             Some(ParseState::Schema { .. }) => match local_name {
                 "element" => {
-                    let [name] = get_attributes(reader, start.attributes(), ["name"])?;
+                    let [name, ty] = get_attributes(reader, start.attributes(), ["name", "type"])?;
 
                     let name = if let Some(name) = name {
                         name
@@ -477,8 +531,14 @@ impl Parser {
                         unimplemented!()
                     };
 
-                    new_state = Some(ParseState::Element { name, kind: None })
-                },
+                    let kind = if let Some(ty) = ty {
+                        Some(TypeKind::Alias(self.resolve_namespace(&ty)))
+                    } else {
+                        None
+                    };
+
+                    new_state = Some(ParseState::Element { name, kind })
+                }
 
                 "complexType" => {
                     let [name] = get_attributes(reader, start.attributes(), ["name"])?;
@@ -489,14 +549,53 @@ impl Parser {
                         unimplemented!()
                     };
 
-                    new_state = Some(ParseState::ComplexType { kind: None, name: Some(name) });
-                },
+                    new_state = Some(ParseState::ComplexType {
+                        kind: None,
+                        name: Some(name),
+                    });
+                }
+
+                "simpleType" => {
+                    let [name] = get_attributes(reader, start.attributes(), ["name"])?;
+
+                    let name = if let Some(name) = name {
+                        name
+                    } else {
+                        unimplemented!()
+                    };
+
+                    new_state = Some(ParseState::SimpleType { name, ty: None })
+                }
+
+                "include" | "import" => {
+                    let [location, namespace] = get_attributes(
+                        reader,
+                        start.attributes(),
+                        ["schemaLocation", "namespace"],
+                    )?;
+
+                    let location = if let Some(location) = location {
+                        location
+                    } else {
+                        unimplemented!()
+                    };
+
+                    self.parse_url(self.root.join(&location)?)?;
+                    println!("BACK TO {}", url);
+
+                    new_state = Some(ParseState::Import { namespace });
+                }
 
                 _ => println!("FOUND {} INSIDE SCHEMA BLOCK", local_name),
             },
 
             Some(ParseState::Element { .. }) => match local_name {
-                "complexType" => new_state = Some(ParseState::ComplexType { kind: None, name: None }),
+                "complexType" => {
+                    new_state = Some(ParseState::ComplexType {
+                        kind: None,
+                        name: None,
+                    })
+                }
 
                 _ => println!("FOUND {} INSIDE ELEMENT BLOCK", local_name),
             },
@@ -504,8 +603,77 @@ impl Parser {
             Some(ParseState::ComplexType { .. }) => match local_name {
                 "sequence" => new_state = Some(ParseState::Sequence(Vec::new())),
 
+                "simpleContent" => new_state = Some(ParseState::SimpleContent{ty: None}),
+
+                "complexContent" => new_state = Some(ParseState::ComplexContent{fields: Vec::new()}),
+
                 _ => println!("FOUND {} INSIDE COMPLEX TYPE BLOCK", local_name),
             },
+
+            Some(ParseState::ComplexContent { .. }) => match local_name {
+                "extension" => {
+                    let [base] = get_attributes(reader, start.attributes(), ["base"])?;
+
+                    let ty = if let Some(base) = base {
+                        self.resolve_namespace(&base)
+                    } else {
+                        unimplemented!()
+                    };
+
+                    let field = Field {
+                        name: self.resolve_namespace("tns:base"),
+                        ty: FieldKind::Type(ty)
+                    };
+
+                    new_state = Some(ParseState::ComplexExtension { fields: vec![field] });
+                },
+
+                _ => println!("FOUND {} INSIDE COMPLEX CONTENT BLOCK", local_name),
+            },
+
+            Some(ParseState::ComplexExtension { .. }) => match local_name {
+                "sequence" => new_state = Some(ParseState::Sequence(Vec::new())),
+
+                _ => println!("FOUND {} INSIDE COMPLEX EXTENSION BLOCK", local_name),
+            }
+
+            Some(ParseState::SimpleExtension { .. }) => println!("FOUND {} INSIDE SIMPLE EXTENSION BLOCK", local_name),
+
+            Some(ParseState::SimpleContent { .. }) => match local_name {
+                "extension" => {
+                    let [base] = get_attributes(reader, start.attributes(), ["base"])?;
+
+                    let ty = if let Some(base) = base {
+                        self.resolve_namespace(&base)
+                    } else {
+                        unimplemented!()
+                    };
+
+                    new_state = Some(ParseState::SimpleExtension { ty });
+                },
+
+                _ => println!("FOUND {} INSIDE SIMPLE CONTENT BLOCK", local_name),
+            },
+
+            Some(ParseState::SimpleType { .. }) => match local_name {
+                "restriction" => {
+                    let [base] = get_attributes(reader, start.attributes(), ["base"])?;
+
+                    let ty = if let Some(base) = base {
+                        self.resolve_namespace(&base)
+                    } else {
+                        unimplemented!()
+                    };
+
+                    new_state = Some(ParseState::Restriction { ty });
+                }
+
+                _ => println!("FOUND {} INSIDE SIMPLE TYPE BLOCK", local_name),
+            },
+
+            Some(ParseState::Restriction { .. }) => {
+                println!("FOUND {} INSIDE RESTRICTION BLOCK", local_name)
+            }
 
             Some(ParseState::Sequence(_)) => match local_name {
                 "element" => {
@@ -518,18 +686,30 @@ impl Parser {
                     };
 
                     let ty = if let Some(ty) = ty {
-                        self.resolve_namespace(&ty)
+                        Some(self.resolve_namespace(&ty))
                     } else {
-                        unimplemented!()
+                        println!("{:?}", start);
+                        None
                     };
 
-                    new_state = Some(ParseState::SequenceElement { name, ty });
+                    new_state = Some(ParseState::SequenceElement {
+                        name,
+                        ty,
+                        inner: None,
+                    });
                 }
 
                 _ => println!("FOUND {} INSIDE SEQUENCE BLOCK", local_name),
             },
 
             Some(ParseState::SequenceElement { .. }) => match local_name {
+                "complexType" => {
+                    new_state = Some(ParseState::ComplexType {
+                        kind: None,
+                        name: None,
+                    })
+                }
+
                 _ => println!("FOUND {} INSIDE SEQUENCE ELEMENT BLOCK", local_name),
             },
 
@@ -769,8 +949,6 @@ impl Parser {
         let finished_state = stack.pop();
         let mut next_state = stack.pop();
 
-        println!("ENDING STATE {:?}", finished_state);
-
         match finished_state {
             Some(ParseState::Definitions | ParseState::Schema) => self.pop_target_namespace(),
 
@@ -786,15 +964,25 @@ impl Parser {
             }
 
             Some(ParseState::ComplexType { kind, name }) => match next_state {
+                Some(ParseState::SequenceElement {
+                    ref mut ty,
+                    ref mut inner,
+                    ..
+                }) => {
+                    *ty = name.map(|name| self.target_namespaced(name));
+                    *inner = kind;
+                }
+
                 Some(ParseState::Element {
-                    kind: ref mut el_kind, ..
+                    kind: ref mut el_kind,
+                    ..
                 }) => {
                     if name.is_some() {
                         unimplemented!()
                     }
 
                     *el_kind = kind;
-                },
+                }
 
                 _ => {
                     let kind = if let Some(kind) = kind {
@@ -810,20 +998,73 @@ impl Parser {
                     };
 
                     self.definition.types.push(Type { name, kind })
+                }
+            },
+
+            Some(ParseState::ComplexContent { fields }) => match next_state {
+                Some(ParseState::ComplexType { ref mut kind, .. }) if kind.is_none() => {
+                    *kind = Some(TypeKind::Struct(fields))
                 },
+
+                _ => unimplemented!()
+            }
+
+            Some(ParseState::ComplexExtension { fields }) => match next_state {
+                Some(ParseState::ComplexContent { fields: ref mut content  }) => content.extend(fields.into_iter()),
+
+                _ => unimplemented!()
+            }
+
+            Some(ParseState::SimpleContent { ty}) => match next_state {
+                Some(ParseState::ComplexType { ref mut kind, .. }) if kind.is_none() => {
+                    *kind = Some(TypeKind::Alias(ty.unwrap()))
+                },
+
+                _ => unimplemented!()
+            }
+
+            Some(ParseState::SimpleExtension { ty: base }) => match next_state {
+                Some(ParseState::SimpleContent { ref mut ty }) => *ty = Some(base),
+
+                _ => unimplemented!()
+            }
+
+            Some(ParseState::SimpleType { name, ty }) => {
+                let kind = if let Some(ty) = ty {
+                    TypeKind::Simple(ty)
+                } else {
+                    unimplemented!()
+                };
+
+                let name = self.target_namespaced(name);
+                self.definition.types.push(Type { name, kind })
+            }
+
+            Some(ParseState::Restriction { ty: base }) => match next_state {
+                Some(ParseState::SimpleType { ref mut ty, .. }) => *ty = Some(base),
+                _ => unimplemented!(),
             },
 
             Some(ParseState::Sequence(fields)) => match next_state {
                 Some(ParseState::ComplexType { ref mut kind, .. }) if kind.is_none() => {
                     *kind = Some(TypeKind::Struct(fields))
-                }
+                },
+
+                Some(ParseState::ComplexExtension { fields: ref mut extension_fields, .. }) => {
+                    extension_fields.extend(fields.into_iter())
+                },
+
                 _ => unimplemented!(),
             },
 
-            Some(ParseState::SequenceElement { name, ty }) => match next_state {
+            Some(ParseState::SequenceElement { name, ty, inner }) => match next_state {
                 Some(ParseState::Sequence(ref mut fields)) => fields.push(Field {
                     name: self.target_namespaced(name),
-                    ty,
+                    ty: if let Some(kind) = inner {
+                        FieldKind::Inner(kind)
+                    } else {
+                        FieldKind::Type(ty.unwrap())
+                    },
                 }),
                 _ => unimplemented!(),
             },
@@ -836,7 +1077,7 @@ impl Parser {
             Some(ParseState::Part { name, element }) => match next_state {
                 Some(ParseState::Message { ref mut parts, .. }) => parts.push(Field {
                     name: self.target_namespaced(name),
-                    ty: element,
+                    ty: FieldKind::Type(element),
                 }),
                 _ => unimplemented!(),
             },
@@ -983,7 +1224,6 @@ impl Parser {
                 _ => unimplemented!(),
             },
 
-            Some(ParseState::Import { url, .. }) => self.queue.push(url),
             _ => (),
         }
 
