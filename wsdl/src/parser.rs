@@ -77,6 +77,7 @@ enum ParseState {
         kind: Option<TypeKind>,
     },
     ComplexType {
+        name: Option<String>,
         kind: Option<TypeKind>,
     },
     Sequence(Vec<Field>),
@@ -477,13 +478,25 @@ impl Parser {
                     };
 
                     new_state = Some(ParseState::Element { name, kind: None })
-                }
+                },
+
+                "complexType" => {
+                    let [name] = get_attributes(reader, start.attributes(), ["name"])?;
+
+                    let name = if let Some(name) = name {
+                        name
+                    } else {
+                        unimplemented!()
+                    };
+
+                    new_state = Some(ParseState::ComplexType { kind: None, name: Some(name) });
+                },
 
                 _ => println!("FOUND {} INSIDE SCHEMA BLOCK", local_name),
             },
 
             Some(ParseState::Element { .. }) => match local_name {
-                "complexType" => new_state = Some(ParseState::ComplexType { kind: None }),
+                "complexType" => new_state = Some(ParseState::ComplexType { kind: None, name: None }),
 
                 _ => println!("FOUND {} INSIDE ELEMENT BLOCK", local_name),
             },
@@ -772,15 +785,36 @@ impl Parser {
                 self.definition.types.push(Type { name, kind })
             }
 
-            Some(ParseState::ComplexType { kind }) => match next_state {
+            Some(ParseState::ComplexType { kind, name }) => match next_state {
                 Some(ParseState::Element {
-                    kind: ref mut none, ..
-                }) if none.is_none() => *none = kind,
-                _ => unimplemented!(),
+                    kind: ref mut el_kind, ..
+                }) => {
+                    if name.is_some() {
+                        unimplemented!()
+                    }
+
+                    *el_kind = kind;
+                },
+
+                _ => {
+                    let kind = if let Some(kind) = kind {
+                        kind
+                    } else {
+                        unimplemented!()
+                    };
+
+                    let name = if let Some(name) = name {
+                        self.target_namespaced(name)
+                    } else {
+                        unimplemented!()
+                    };
+
+                    self.definition.types.push(Type { name, kind })
+                },
             },
 
             Some(ParseState::Sequence(fields)) => match next_state {
-                Some(ParseState::ComplexType { ref mut kind }) if kind.is_none() => {
+                Some(ParseState::ComplexType { ref mut kind, .. }) if kind.is_none() => {
                     *kind = Some(TypeKind::Struct(fields))
                 }
                 _ => unimplemented!(),
