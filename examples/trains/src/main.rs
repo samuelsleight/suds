@@ -6,13 +6,13 @@ mod trains {
 fn main() {
     let message = trains::messages::GetNextDeparturesWithDetailsSoapIn {
         parameters: trains::types::GetNextDeparturesWithDetailsRequest {
-            crs: trains::types::CRSType("BSK"),
-            filterList: trains::types::CRSType("BHM"),
+            crs: trains::types::CRSType("BSK".into()),
+            filterList: trains::types::CRSType("BHM".into()),
             timeOffset: 0,
             timeWindow: 120
         }
     };
 
     let envelope = suds_util::soap::Envelope::new(message);
-    println!("{}", envelope.into_body());
+    println!("{}", String::from_utf8(envelope.to_request()).unwrap());
 }

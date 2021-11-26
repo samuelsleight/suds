@@ -76,3 +76,15 @@ pub fn expect_end<'a, R: BufRead>(
 
     None
 }
+
+impl ToXml for String {
+    fn to_xml<W: Write>(&self, writer: &mut Writer<W>, _: bool) {
+        writer.write_event(events::Event::Text(events::BytesText::from_plain_str(self))).unwrap();
+    }
+}
+
+impl FromXml for String {
+    fn from_xml<R: BufRead>(reader: &mut Reader<R>, buffer: &mut Vec<u8>) -> Self {
+        expect_value(reader, buffer).unwrap()
+    }
+}
