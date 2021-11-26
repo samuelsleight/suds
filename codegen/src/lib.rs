@@ -4,8 +4,6 @@ use suds_wsdl::{
     types::{Definition, Namespaces},
 };
 
-use codegen::Codegen;
-
 mod codegen;
 mod preprocessor;
 mod types;
@@ -20,5 +18,5 @@ pub fn from_definition(
     namespaces: &Namespaces,
 ) -> Result<TokenStream, error::Error> {
     let definition = preprocessor::preprocess(definition);
-    Ok(definition.codegen(namespaces))
+    Ok(codegen::codegen(&definition, namespaces))
 }
