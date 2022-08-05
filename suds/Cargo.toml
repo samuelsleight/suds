@@ -11,3 +11,5 @@ structopt = { version = "0.3.25", features = ["paw"] }
 suds_codegen = { path = "../codegen" }
 suds_wsdl = { path = "../wsdl" }
 thiserror = "1.0.30"
+syn = "1.0"
+prettyplease = "0.1.18"

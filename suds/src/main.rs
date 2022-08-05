@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, process::Command};
+use std::{fs::File, io::Write};
 
 use structopt::StructOpt;
 use thiserror::Error;
@@ -10,6 +10,9 @@ use suds_wsdl as wsdl;
 enum Error {
     #[error("Error parsing WSDL")]
     ParseError(#[from] wsdl::error::Error),
+
+    #[error("Error handling output")]
+    SynError(#[from] syn::Error),
 
     #[error("Error")]
     IoError(#[from] std::io::Error),
@@ -27,10 +30,11 @@ struct Args {
 fn main(args: Args) -> Result<(), Error> {
     {
         let tokens = codegen::from_url(args.input)?;
+        let ast: syn::File = syn::parse2(tokens)?;
+
         let mut file = File::create(&args.output)?;
-        write!(&mut file, "{}", tokens)?;
+        write!(&mut file, "{}", prettyplease::unparse(&ast))?;
     }
 
-    Command::new("rustfmt").arg(args.output).output()?;
     Ok(())
 }
